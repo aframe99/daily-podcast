@@ -33,8 +33,12 @@ const HOST_B_VOICE = 'en-US-JennyNeural';
 
 const FEEDS = [
   'https://feeds.npr.org/1001/rss.xml',
-  'https://www.policeone.com/rss/',
-  'https://www.govtech.com/rss/all.rss',
+  // The original policeone.com and govtech.com feed URLs both 404 (policeone.com
+  // rebranded to police1.com and no longer publishes a plain RSS endpoint at
+  // that path; govtech.com/rss/all.rss doesn't exist either). Replaced with two
+  // confirmed-working feeds that cover the same local-government-tech ground:
+  'https://feeds.feedburner.com/StateTech', // state & local government IT, incl. public safety tech
+  'https://www.nextgov.com/rss/all/', // federal/state govtech and cybersecurity news
   // Google News topic-search RSS also works well:
   // https://news.google.com/rss/search?q=YOUR+TOPIC&hl=en-US&gl=US&ceid=US:en
 ];
@@ -317,6 +321,25 @@ async function sendEmail({ podcastUrl, reviewUrl, dateStr, storyCount }) {
   if (!res.ok) throw new Error(`Resend send failed: ${await res.text()}`);
 }
 
+async function sendNoStoriesEmail({ reviewUrl, dateStr, candidateCount }) {
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: process.env.RESEND_FROM_EMAIL,
+      to: process.env.USER_EMAIL,
+      subject: `No podcast today — ${dateStr}`,
+      html: `<p>Checked ${candidateCount} stories today, but none matched your topics/likes closely enough to make the cut, so there's no episode.</p>
+             <p>This is normal on quiet news days. Flag anything interesting from your phone, or loosen your topics/likes on the review page, to get more picks tomorrow.</p>
+             <p><a href="${reviewUrl}">Review / adjust preferences</a></p>`,
+    }),
+  });
+  if (!res.ok) throw new Error(`Resend send failed: ${await res.text()}`);
+}
+
 // ============================================================
 // MAIN
 // ============================================================
@@ -348,6 +371,17 @@ async function main() {
     selected: allSelected,
     rejected,
   }], 'review_date');
+
+  if (allSelected.length === 0) {
+    console.log('No stories matched today — sending a heads-up email instead of a podcast.');
+    await sendNoStoriesEmail({
+      reviewUrl: process.env.REVIEW_PAGE_URL,
+      dateStr,
+      candidateCount: candidates.length,
+    });
+    console.log('Done (no episode today).');
+    return;
+  }
 
   console.log('Generating script...');
   const script = await generateScript(allSelected);

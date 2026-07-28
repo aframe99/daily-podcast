@@ -246,7 +246,7 @@ async function loadEpisode() {
       weekday: "long", year: "numeric", month: "long", day: "numeric",
     });
 
-    const audioUrl = `${SUPABASE_URL}/storage/v1/object/public/podcasts/podcast-${reviewDate}.mp3`;
+    const audioUrl = `${SUPABASE_URL}/storage/v1/object/public/podcasts/podcast-${reviewDate}.wav`;
     const check = await fetch(audioUrl, { method: "HEAD" }).catch(() => null);
     if (check && check.ok) {
       episodeCard.innerHTML = `<audio controls src="${audioUrl}"></audio>`;

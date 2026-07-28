@@ -1,7 +1,7 @@
 {
   "name": "daily-podcast",
   "version": "1.0.0",
-  "description": "Collects flagged + RSS news, filters via free Gemini API, generates a daily 2-host podcast with free edge-tts, emails a link",
+  "description": "Collects flagged + RSS news, filters via free Gemini API, generates a daily 2-host podcast with Gemini's native TTS, emails a link",
   "main": "daily-podcast.js",
   "scripts": {
     "start": "node daily-podcast.js"
@@ -9,7 +9,6 @@
   "dependencies": {
     "rss-parser": "^3.13.0",
     "@mozilla/readability": "^0.5.0",
-    "jsdom": "^24.0.0",
-    "msedge-tts": "^2.0.7"
+    "jsdom": "^24.0.0"
   }
 }

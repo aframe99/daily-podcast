@@ -3,10 +3,12 @@
  * daily-podcast.js
  * ------------------------------------------------------------
  * Zero-cost version: uses Google's Gemini API free tier (no
- * credit card, so no way to be billed) for filtering + script
- * writing, and the free `msedge-tts` library (rides on
- * Microsoft Edge's built-in voices, no account/key needed) for
- * audio. Runs once a day via GitHub Actions.
+ * credit card, so no way to be billed) for filtering, script
+ * writing, AND audio — Gemini's own native text-to-speech model
+ * (also free tier, same API key) generates both podcast voices
+ * directly, which sounds far more natural than the free
+ * Microsoft Edge voices this used to rely on. Runs once a day
+ * via GitHub Actions.
  *
  * Required environment variables (set as GitHub Actions secrets):
  *   SUPABASE_URL
@@ -23,13 +25,13 @@ const crypto = require('crypto');
 const Parser = require('rss-parser');
 const { JSDOM } = require('jsdom');
 const { Readability } = require('@mozilla/readability');
-const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const GEMINI_MODEL = 'gemini-3.5-flash-lite'; // stable free-tier model, no billing required; lite tier tends to have more capacity headroom
-const HOST_A_VOICE = 'en-US-GuyNeural';
-const HOST_B_VOICE = 'en-US-JennyNeural';
+const TTS_MODEL = 'gemini-2.5-flash-preview-tts'; // free-tier native Gemini TTS; picked over the newer 3.1 TTS preview to avoid the same demand-congestion we hit on gemini-3.5-flash
+const HOST_A_VOICE = 'Puck'; // Gemini prebuilt voice: "Upbeat"
+const HOST_B_VOICE = 'Kore'; // Gemini prebuilt voice: "Firm" — the two voices used in Google's own multi-speaker examples
 
 const FEEDS = [
   'https://feeds.npr.org/1001/rss.xml',
@@ -271,53 +273,110 @@ ${storyBlock}`;
 }
 
 // ============================================================
-// 5. AUDIO — free edge-tts, per line, concatenated
+// 5. AUDIO — Gemini's own native two-speaker TTS (free tier)
 // ============================================================
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function synthesizeSpeech(text, voice, attempt = 1) {
-  try {
-    const tts = new MsEdgeTTS();
-    await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
-    const { audioStream } = await tts.toStream(text);
+// Gemini TTS returns raw 16-bit PCM audio (24kHz, mono) with no file header —
+// this wraps it in a standard 44-byte WAV header so it's a playable file.
+function pcmToWav(pcmBuffer, sampleRate = 24000, numChannels = 1, bitsPerSample = 16) {
+  const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
+  const blockAlign = (numChannels * bitsPerSample) / 8;
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcmBuffer.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(numChannels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcmBuffer.length, 40);
+  return Buffer.concat([header, pcmBuffer]);
+}
 
-    const chunks = [];
-    for await (const chunk of audioStream) chunks.push(chunk);
-    const buf = Buffer.concat(chunks);
-    if (buf.length === 0) throw new Error('Empty audio stream (likely dropped connection).');
-    return buf;
-  } catch (err) {
-    // This unofficial Microsoft Edge TTS endpoint is known to be flaky —
-    // it occasionally closes the connection mid-stream, especially from
-    // cloud/datacenter IPs like GitHub Actions runners. Retry a few times
-    // with a short pause rather than failing the whole day's episode.
-    if (attempt < 4) {
-      const delayMs = 1500 * attempt;
-      console.log(`TTS line failed (${err.message}), retrying in ${delayMs / 1000}s (attempt ${attempt + 1}/4)...`);
-      await sleep(delayMs);
-      return synthesizeSpeech(text, voice, attempt + 1);
+async function synthesizeChunk(chunkText, attempt = 1) {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${TTS_MODEL}:generateContent`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': process.env.GEMINI_API_KEY,
+      },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{
+            text: `TTS the following conversation between speaker A and speaker B. Keep a natural, conversational podcast delivery:\n\n${chunkText}`,
+          }],
+        }],
+        generationConfig: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            multiSpeakerVoiceConfig: {
+              speakerVoiceConfigs: [
+                { speaker: 'A', voiceConfig: { prebuiltVoiceConfig: { voiceName: HOST_A_VOICE } } },
+                { speaker: 'B', voiceConfig: { prebuiltVoiceConfig: { voiceName: HOST_B_VOICE } } },
+              ],
+            },
+          },
+        },
+      }),
     }
-    throw err;
+  );
+
+  if (!res.ok) {
+    const bodyText = await res.text();
+    const transient = res.status === 503 || res.status === 429 || res.status >= 500;
+    if (transient && attempt < 4) {
+      const delayMs = 2000 * attempt;
+      console.log(`TTS chunk failed (status ${res.status}), retrying in ${delayMs / 1000}s (attempt ${attempt + 1}/4)...`);
+      await sleep(delayMs);
+      return synthesizeChunk(chunkText, attempt + 1);
+    }
+    throw new Error(`Gemini TTS call failed: ${bodyText}`);
   }
+
+  const data = await res.json();
+  const inlineData = data.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+  if (!inlineData?.data) {
+    // Docs note this model occasionally returns text instead of audio on a
+    // small percentage of requests — worth a retry rather than failing.
+    if (attempt < 4) {
+      const delayMs = 2000 * attempt;
+      console.log(`TTS chunk returned no audio, retrying in ${delayMs / 1000}s (attempt ${attempt + 1}/4)...`);
+      await sleep(delayMs);
+      return synthesizeChunk(chunkText, attempt + 1);
+    }
+    throw new Error('Gemini TTS returned no audio data after retries.');
+  }
+  return Buffer.from(inlineData.data, 'base64');
 }
 
 async function renderAudio(script) {
   const lines = script.split('\n').map(l => l.trim()).filter(l => /^[AB]:/.test(l));
   if (lines.length === 0) throw new Error('Script not in expected A:/B: format.');
 
+  // Chunk the script rather than sending it all in one TTS call — Google's
+  // own docs note speech quality/consistency can drift on outputs longer
+  // than a few minutes, so smaller chunks keep each one sounding clean.
+  const LINES_PER_CHUNK = 8;
   const chunks = [];
-  for (const line of lines) {
-    const speaker = line[0];
-    const content = line.slice(2).trim();
-    if (!content) continue;
-    const voice = speaker === 'A' ? HOST_A_VOICE : HOST_B_VOICE;
-    chunks.push(await synthesizeSpeech(content, voice));
-    // Small gap between requests so we don't hammer the endpoint with
-    // back-to-back new connections, which seems to trigger the drops.
-    await sleep(250);
+  for (let i = 0; i < lines.length; i += LINES_PER_CHUNK) {
+    chunks.push(lines.slice(i, i + LINES_PER_CHUNK).join('\n'));
   }
-  return Buffer.concat(chunks);
+
+  const pcmParts = [];
+  for (const chunk of chunks) {
+    pcmParts.push(await synthesizeChunk(chunk));
+    await sleep(250); // small gap between requests
+  }
+  return pcmToWav(Buffer.concat(pcmParts));
 }
 
 // ============================================================
@@ -412,7 +471,7 @@ async function main() {
   const audioBuffer = await renderAudio(script);
 
   console.log('Uploading audio to Supabase storage...');
-  const podcastUrl = await sbUploadFile('podcasts', `podcast-${dateStr}.mp3`, audioBuffer, 'audio/mpeg');
+  const podcastUrl = await sbUploadFile('podcasts', `podcast-${dateStr}.wav`, audioBuffer, 'audio/wav');
 
   console.log('Marking flagged stories as processed...');
   for (const f of flagged) {

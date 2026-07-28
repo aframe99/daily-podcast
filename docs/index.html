@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Daily Podcast Review</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14161a;
+    --card: #1e2126;
+    --border: #2c3038;
+    --text: #e8e9ec;
+    --muted: #9aa0ab;
+    --accent: #5b8cff;
+    --good: #3ecf8e;
+    --bad: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 16px;
+    max-width: 640px;
+    margin: 0 auto;
+    padding-bottom: 80px;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); font-size: 0.9rem; margin-bottom: 20px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  audio { width: 100%; margin-top: 8px; }
+  .story {
+    border-bottom: 1px solid var(--border);
+    padding: 12px 0;
+  }
+  .story:last-child { border-bottom: none; }
+  .story-title { font-weight: 600; margin-bottom: 2px; }
+  .story-meta { color: var(--muted); font-size: 0.8rem; margin-bottom: 6px; }
+  .story a { color: var(--accent); text-decoration: none; font-size: 0.85rem; }
+  .vote-row { display: flex; gap: 8px; margin-top: 8px; }
+  button {
+    font: inherit;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: #262a31;
+    color: var(--text);
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  button.voted-like { background: var(--good); color: #08210f; border-color: var(--good); }
+  button.voted-dislike { background: var(--bad); color: #2a0a0a; border-color: var(--bad); }
+  button:disabled { opacity: 0.6; cursor: default; }
+  .save-btn, .refresh-btn {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    font-weight: 600;
+    padding: 10px 16px;
+    width: 100%;
+  }
+  label { display: block; margin-top: 12px; font-size: 0.85rem; color: var(--muted); }
+  input[type=text], textarea {
+    width: 100%;
+    margin-top: 4px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: #14161a;
+    color: var(--text);
+    font: inherit;
+  }
+  textarea { min-height: 60px; resize: vertical; }
+  .status { font-size: 0.85rem; color: var(--muted); margin-top: 8px; min-height: 1.2em; }
+  .rejected summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
+  .empty { color: var(--muted); font-size: 0.9rem; }
+</style>
+</head>
+<body>
+
+<h1>🎧 Daily Podcast</h1>
+<div class="subtitle" id="dateLabel">Loading...</div>
+
+<div class="card" id="episodeCard">
+  <div class="empty">Loading today's episode...</div>
+</div>
+
+<div class="card" id="selectedCard" style="display:none;">
+  <h2 style="margin-top:0; font-size:1.1rem;">Today's stories</h2>
+  <div id="selectedList"></div>
+</div>
+
+<div class="card rejected" id="rejectedCard" style="display:none;">
+  <details>
+    <summary id="rejectedSummary">Also considered, not included</summary>
+    <div id="rejectedList" style="margin-top:10px;"></div>
+  </details>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0; font-size:1.1rem;">Your preferences</h2>
+  <label for="topics">Topics (comma-separated)</label>
+  <input type="text" id="topics" placeholder="e.g. local news, tech, space">
+  <label for="likes">What you like</label>
+  <textarea id="likes" placeholder="e.g. concise explainer stories, local government news"></textarea>
+  <label for="dislikes">What you don't like</label>
+  <textarea id="dislikes" placeholder="e.g. celebrity gossip, sports"></textarea>
+  <button class="save-btn" id="saveBtn" style="margin-top:14px;">Save preferences</button>
+  <div class="status" id="prefStatus"></div>
+</div>
+
+<button class="refresh-btn" onclick="location.reload()">Refresh</button>
+
+<script>
+// ---- Config: safe to expose, this is the public "anon" key (RLS-gated) ----
+const SUPABASE_URL = "https://ziugqehvojxwjizmzzqw.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InppdWdxZWh2b2p4d2ppem16enF3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUyMjA2MjMsImV4cCI6MjEwMDc5NjYyM30.RFP-DLVAmkhkbameC01oNA7-H2iuWN15bEUn52gPHdM";
+
+const headers = {
+  apikey: SUPABASE_KEY,
+  Authorization: `Bearer ${SUPABASE_KEY}`,
+  "Content-Type": "application/json",
+};
+
+function votedKey(reviewDate, storyId) {
+  return `vote:${reviewDate}:${storyId}`;
+}
+
+async function sbGet(table, query) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${query}`, { headers });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+async function sbPost(table, body) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+    method: "POST",
+    headers: { ...headers, Prefer: "return=minimal" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+async function sbPatch(table, query, body) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${query}`, {
+    method: "PATCH",
+    headers: { ...headers, Prefer: "return=minimal" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+function renderStory(story, reviewDate, container, showVotes) {
+  const div = document.createElement("div");
+  div.className = "story";
+
+  const title = document.createElement("div");
+  title.className = "story-title";
+  title.textContent = story.title || "(untitled)";
+  div.appendChild(title);
+
+  const meta = document.createElement("div");
+  meta.className = "story-meta";
+  meta.textContent = [story.source, story.reason].filter(Boolean).join(" — ");
+  div.appendChild(meta);
+
+  if (story.link) {
+    const a = document.createElement("a");
+    a.href = story.link;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = "Read article →";
+    div.appendChild(a);
+  }
+
+  if (showVotes) {
+    const row = document.createElement("div");
+    row.className = "vote-row";
+    const likeBtn = document.createElement("button");
+    const dislikeBtn = document.createElement("button");
+    likeBtn.textContent = "👍 More like this";
+    dislikeBtn.textContent = "👎 Less like this";
+
+    const stored = localStorage.getItem(votedKey(reviewDate, story.id));
+    if (stored === "like") likeBtn.classList.add("voted-like");
+    if (stored === "dislike") dislikeBtn.classList.add("voted-dislike");
+    if (stored) { likeBtn.disabled = true; dislikeBtn.disabled = true; }
+
+    async function vote(decision) {
+      likeBtn.disabled = true;
+      dislikeBtn.disabled = true;
+      try {
+        await sbPost("feedback", {
+          story_id: story.id,
+          title: story.title,
+          source: story.source,
+          decision,
+          review_date: reviewDate,
+        });
+        localStorage.setItem(votedKey(reviewDate, story.id), decision);
+        likeBtn.classList.toggle("voted-like", decision === "like");
+        dislikeBtn.classList.toggle("voted-dislike", decision === "dislike");
+      } catch (err) {
+        likeBtn.disabled = false;
+        dislikeBtn.disabled = false;
+        alert("Couldn't save your vote, try again: " + err.message);
+      }
+    }
+
+    likeBtn.onclick = () => vote("like");
+    dislikeBtn.onclick = () => vote("dislike");
+    row.appendChild(likeBtn);
+    row.appendChild(dislikeBtn);
+    div.appendChild(row);
+  }
+
+  container.appendChild(div);
+}
+
+async function loadEpisode() {
+  const dateLabel = document.getElementById("dateLabel");
+  const episodeCard = document.getElementById("episodeCard");
+  const selectedCard = document.getElementById("selectedCard");
+  const selectedList = document.getElementById("selectedList");
+  const rejectedCard = document.getElementById("rejectedCard");
+  const rejectedList = document.getElementById("rejectedList");
+  const rejectedSummary = document.getElementById("rejectedSummary");
+
+  try {
+    const rows = await sbGet("reviews", "select=*&order=review_date.desc&limit=1");
+    if (!rows.length) {
+      dateLabel.textContent = "No episodes yet";
+      episodeCard.innerHTML = '<div class="empty">Nothing has run yet. Once the daily workflow runs, today\'s episode will show up here.</div>';
+      return;
+    }
+    const review = rows[0];
+    const reviewDate = review.review_date;
+    dateLabel.textContent = new Date(reviewDate + "T00:00:00").toLocaleDateString(undefined, {
+      weekday: "long", year: "numeric", month: "long", day: "numeric",
+    });
+
+    const audioUrl = `${SUPABASE_URL}/storage/v1/object/public/podcasts/podcast-${reviewDate}.mp3`;
+    const check = await fetch(audioUrl, { method: "HEAD" }).catch(() => null);
+    if (check && check.ok) {
+      episodeCard.innerHTML = `<audio controls src="${audioUrl}"></audio>`;
+    } else {
+      episodeCard.innerHTML = '<div class="empty">Audio not available yet for this date.</div>';
+    }
+
+    const selected = review.selected || [];
+    const rejected = review.rejected || [];
+
+    if (selected.length) {
+      selectedCard.style.display = "block";
+      selected.forEach(s => renderStory(s, reviewDate, selectedList, true));
+    }
+
+    if (rejected.length) {
+      rejectedCard.style.display = "block";
+      rejectedSummary.textContent = `Also considered, not included (${rejected.length})`;
+      rejected.forEach(s => renderStory(s, reviewDate, rejectedList, false));
+    }
+  } catch (err) {
+    dateLabel.textContent = "Error loading episode";
+    episodeCard.innerHTML = `<div class="empty">${err.message}</div>`;
+  }
+}
+
+async function loadPreferences() {
+  const status = document.getElementById("prefStatus");
+  try {
+    const rows = await sbGet("preferences", "id=eq.1&select=*");
+    const prefs = rows[0] || { topics: [], likes: "", dislikes: "" };
+    document.getElementById("topics").value = (prefs.topics || []).join(", ");
+    document.getElementById("likes").value = prefs.likes || "";
+    document.getElementById("dislikes").value = prefs.dislikes || "";
+  } catch (err) {
+    status.textContent = "Couldn't load preferences: " + err.message;
+  }
+}
+
+document.getElementById("saveBtn").addEventListener("click", async () => {
+  const status = document.getElementById("prefStatus");
+  const topics = document.getElementById("topics").value
+    .split(",").map(t => t.trim()).filter(Boolean);
+  const likes = document.getElementById("likes").value;
+  const dislikes = document.getElementById("dislikes").value;
+  status.textContent = "Saving...";
+  try {
+    await sbPatch("preferences", "id=eq.1", { topics, likes, dislikes });
+    status.textContent = "Saved ✓";
+    setTimeout(() => { status.textContent = ""; }, 2500);
+  } catch (err) {
+    status.textContent = "Couldn't save: " + err.message;
+  }
+});
+
+loadEpisode();
+loadPreferences();
+</script>
+</body>
+</html>

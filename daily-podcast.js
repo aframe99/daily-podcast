@@ -44,7 +44,7 @@ const MAX_ITEMS_PER_FEED = 15;
 // GEMINI HELPER (free tier — no billing enabled, so no way to be charged)
 // ============================================================
 
-async function callGemini(prompt) {
+async function callGemini(prompt, attempt = 1) {
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
     {
@@ -58,7 +58,20 @@ async function callGemini(prompt) {
       }),
     }
   );
-  if (!res.ok) throw new Error(`Gemini call failed: ${await res.text()}`);
+  if (!res.ok) {
+    const bodyText = await res.text();
+    // Retry a few times on transient server-side overload/rate-limit errors —
+    // this runs unattended every morning, so it shouldn't need a human to
+    // just try again a few seconds later.
+    const transient = res.status === 503 || res.status === 429 || res.status >= 500;
+    if (transient && attempt < 4) {
+      const delayMs = 2000 * attempt; // 2s, 4s, 6s
+      console.log(`Gemini call failed (status ${res.status}), retrying in ${delayMs / 1000}s (attempt ${attempt + 1}/4)...`);
+      await new Promise(r => setTimeout(r, delayMs));
+      return callGemini(prompt, attempt + 1);
+    }
+    throw new Error(`Gemini call failed: ${bodyText}`);
+  }
   const data = await res.json();
   return data.candidates[0].content.parts.map(p => p.text || '').join('\n');
 }

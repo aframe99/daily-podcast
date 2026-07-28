@@ -33,10 +33,11 @@ const HOST_B_VOICE = 'en-US-JennyNeural';
 
 const FEEDS = [
   'https://feeds.npr.org/1001/rss.xml',
-  // The original policeone.com and govtech.com feed URLs both 404 (policeone.com
-  // rebranded to police1.com and no longer publishes a plain RSS endpoint at
-  // that path; govtech.com/rss/all.rss doesn't exist either). Replaced with two
-  // confirmed-working feeds that cover the same local-government-tech ground:
+  // The original policeone.com and govtech.com feed URLs both 404'd (policeone.com
+  // rebranded to police1.com and no longer publishes a feed at the old path;
+  // govtech.com/rss/all.rss doesn't exist either). Replaced with confirmed-working
+  // feeds that cover the same ground:
+  'https://police1.com/news.rss', // Police1's real feed (found via their RSS index page) — daily law enforcement news, incl. police tech and traffic enforcement
   'https://feeds.feedburner.com/StateTech', // state & local government IT, incl. public safety tech
   'https://www.nextgov.com/rss/all/', // federal/state govtech and cybersecurity news
   // Google News topic-search RSS also works well:

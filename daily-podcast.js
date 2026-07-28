@@ -274,14 +274,32 @@ ${storyBlock}`;
 // 5. AUDIO — free edge-tts, per line, concatenated
 // ============================================================
 
-async function synthesizeSpeech(text, voice) {
-  const tts = new MsEdgeTTS();
-  await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
-  const { audioStream } = await tts.toStream(text);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  const chunks = [];
-  for await (const chunk of audioStream) chunks.push(chunk);
-  return Buffer.concat(chunks);
+async function synthesizeSpeech(text, voice, attempt = 1) {
+  try {
+    const tts = new MsEdgeTTS();
+    await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+    const { audioStream } = await tts.toStream(text);
+
+    const chunks = [];
+    for await (const chunk of audioStream) chunks.push(chunk);
+    const buf = Buffer.concat(chunks);
+    if (buf.length === 0) throw new Error('Empty audio stream (likely dropped connection).');
+    return buf;
+  } catch (err) {
+    // This unofficial Microsoft Edge TTS endpoint is known to be flaky —
+    // it occasionally closes the connection mid-stream, especially from
+    // cloud/datacenter IPs like GitHub Actions runners. Retry a few times
+    // with a short pause rather than failing the whole day's episode.
+    if (attempt < 4) {
+      const delayMs = 1500 * attempt;
+      console.log(`TTS line failed (${err.message}), retrying in ${delayMs / 1000}s (attempt ${attempt + 1}/4)...`);
+      await sleep(delayMs);
+      return synthesizeSpeech(text, voice, attempt + 1);
+    }
+    throw err;
+  }
 }
 
 async function renderAudio(script) {
@@ -295,6 +313,9 @@ async function renderAudio(script) {
     if (!content) continue;
     const voice = speaker === 'A' ? HOST_A_VOICE : HOST_B_VOICE;
     chunks.push(await synthesizeSpeech(content, voice));
+    // Small gap between requests so we don't hammer the endpoint with
+    // back-to-back new connections, which seems to trigger the drops.
+    await sleep(250);
   }
   return Buffer.concat(chunks);
 }

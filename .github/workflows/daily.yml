@@ -1,0 +1,33 @@
+name: Daily Podcast
+
+on:
+  schedule:
+    # 11:00 UTC ≈ 7:00am Eastern. Note: this stays fixed in UTC, so it'll
+    # drift to 6am or 8am Eastern around Daylight Saving changes twice a
+    # year. Adjust the hour here if that ever bothers you.
+    - cron: '0 11 * * *'
+  workflow_dispatch: {}   # lets you trigger it manually from the Actions tab too
+
+jobs:
+  run-podcast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run daily podcast script
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM_EMAIL: ${{ secrets.RESEND_FROM_EMAIL }}
+          USER_EMAIL: ${{ secrets.USER_EMAIL }}
+          REVIEW_PAGE_URL: ${{ secrets.REVIEW_PAGE_URL }}
+        run: node daily-podcast.js

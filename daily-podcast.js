@@ -27,7 +27,7 @@ const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const GEMINI_MODEL = 'gemini-3.5-flash'; // stable free-tier model, no billing required
+const GEMINI_MODEL = 'gemini-3.5-flash-lite'; // stable free-tier model, no billing required; lite tier tends to have more capacity headroom
 const HOST_A_VOICE = 'en-US-GuyNeural';
 const HOST_B_VOICE = 'en-US-JennyNeural';
 
